@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Adaptive icon foreground — viewport 108×108dp
+    Safe zone: x=18..90, y=18..90
+
+    "E"  x=20..44, y=30..78
+         • vertical bar     x=20–28
+         • top bar          x=20–44, y=30–37
+         • mid bar          x=20–38, y=50–57  (shorter = classic E)
+         • bottom bar       x=20–44, y=71–78
+
+    "B"  x=54..88, y=30..78
+         • vertical bar     x=54–62
+         • top bar          x=54–82, y=30–37
+         • upper right wall x=74–82, y=37–51   → interior hole: x=62–74 (12dp wide)
+         • mid bar          x=54–82, y=51–58
+         • lower right wall x=74–88, y=58–71   → wider lower bump, interior: x=62–74
+         • bottom bar       x=54–88, y=71–78   → bottom spans the full lower bump
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="
+            M20,30 L28,30 L28,78 L20,78 Z
+            M20,30 L44,30 L44,37 L20,37 Z
+            M20,50 L38,50 L38,57 L20,57 Z
+            M20,71 L44,71 L44,78 L20,78 Z
+
+            M54,30 L62,30 L62,78 L54,78 Z
+            M54,30 L82,30 L82,37 L54,37 Z
+            M74,37 L82,37 L82,51 L74,51 Z
+            M54,51 L82,51 L82,58 L54,58 Z
+            M74,58 L88,58 L88,71 L74,71 Z
+            M54,71 L88,71 L88,78 L54,78 Z
+        " />
+
+</vector>

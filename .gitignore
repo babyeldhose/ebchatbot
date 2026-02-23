@@ -1,0 +1,22 @@
+# Gradle
+.gradle/
+build/
+**/build/
+*.apk
+*.aab
+
+# Python virtual environment
+backend/venv/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# Local config
+local.properties
+*.keystore
+.env
+
+# IDE
+.idea/
+*.iml
+.DS_Store

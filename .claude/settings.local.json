@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:developers.google.com)",
+      "WebFetch(domain:ai.google.dev)",
+      "Bash(cmd.exe /c \"adb devices\")",
+      "Bash(cmd.exe /c \"adb devices && adb shell ls /sdcard/Download/\")",
+      "Bash(cmd.exe /c \"dir /s /b C:\\\\Users\\\\EldhoseBaby\\\\AppData\\\\Local\\\\Android\\\\Sdk\\\\platform-tools\\\\adb.exe 2>&1\")"
+    ]
+  }
+}
