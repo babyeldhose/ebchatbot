@@ -18,8 +18,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.net.HttpURLConnection
@@ -31,12 +35,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val appContext = application.applicationContext
 
     enum class ModelState { NOT_LOADED, DOWNLOADING, LOADING, READY, ERROR }
-    enum class InferenceMode { GEMINI, LOCAL }
+    enum class InferenceMode { ONLINE, LOCAL }
+
+    enum class OnlineProvider(
+        val displayName: String,
+        val keyLabel: String,
+        val keyHint: String
+    ) {
+        GEMINI("Gemini",  "Google AI API Key", "AIza…"),
+        OPENAI("ChatGPT", "OpenAI API Key",    "sk-…"),
+        CLAUDE("Claude",  "Anthropic API Key", "sk-ant-…"),
+        GROK(  "Grok",    "xAI API Key",       "xai-…")
+    }
 
     companion object {
         const val MODEL_FILE_NAME = "model.bin"
-        // Paste the file ID from your Google Drive share link:
-        // https://drive.google.com/file/d/GOOGLE_DRIVE_FILE_ID/view?usp=sharing
         private const val GOOGLE_DRIVE_FILE_ID = "1FPEM_HEQsk2lc6VgXHzY5eu7F1w7_A09"
         const val MODEL_DOWNLOAD_URL =
             "https://drive.usercontent.google.com/download?id=$GOOGLE_DRIVE_FILE_ID&export=download&confirm=t"
@@ -51,8 +64,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _isGenerating = MutableStateFlow(false)
     val isGenerating: StateFlow<Boolean> = _isGenerating.asStateFlow()
 
-    private val _apiKey = MutableStateFlow("")
-    val apiKey: StateFlow<String> = _apiKey.asStateFlow()
+    private val _selectedProvider = MutableStateFlow(OnlineProvider.GEMINI)
+    val selectedProvider: StateFlow<OnlineProvider> = _selectedProvider.asStateFlow()
+
+    private val _providerKeys = MutableStateFlow<Map<OnlineProvider, String>>(emptyMap())
+    val providerKeys: StateFlow<Map<OnlineProvider, String>> = _providerKeys.asStateFlow()
 
     private val _modelPath = MutableStateFlow("")
     val modelPath: StateFlow<String> = _modelPath.asStateFlow()
@@ -60,17 +76,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private val _statusMessage = MutableStateFlow("")
     val statusMessage: StateFlow<String> = _statusMessage.asStateFlow()
 
-    private val _geminiReady = MutableStateFlow(false)
-    val geminiReady: StateFlow<Boolean> = _geminiReady.asStateFlow()
+    private val _onlineReady = MutableStateFlow(false)
+    val onlineReady: StateFlow<Boolean> = _onlineReady.asStateFlow()
 
     private val _localReady = MutableStateFlow(false)
     val localReady: StateFlow<Boolean> = _localReady.asStateFlow()
 
-    private val _geminiError = MutableStateFlow<String?>(null)
-    val geminiError: StateFlow<String?> = _geminiError.asStateFlow()
-
     private val _currentMode = MutableStateFlow<InferenceMode?>(null)
     val currentMode: StateFlow<InferenceMode?> = _currentMode.asStateFlow()
+
+    private val _onlineError = MutableStateFlow<String?>(null)
+    val onlineError: StateFlow<String?> = _onlineError.asStateFlow()
 
     private val _downloadProgress = MutableStateFlow(0f)
     val downloadProgress: StateFlow<Float> = _downloadProgress.asStateFlow()
@@ -86,18 +102,26 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private var downloadJob: Job? = null
 
     init {
-        // Pre-fill path if model was already downloaded to private storage
         val modelFile = File(appContext.filesDir, MODEL_FILE_NAME)
         if (modelFile.exists()) {
             _modelPath.value = modelFile.absolutePath
         }
     }
 
+    // ── Provider selection ────────────────────────────────────────────────────
+
+    fun selectProvider(provider: OnlineProvider) {
+        _selectedProvider.value = provider
+    }
+
     // ── Download ──────────────────────────────────────────────────────────────
 
-    fun downloadModel(apiKey: String) {
+    fun downloadModel(provider: OnlineProvider, apiKey: String) {
         val modelFile = File(appContext.filesDir, MODEL_FILE_NAME)
-        _apiKey.value = apiKey
+        _selectedProvider.value = provider
+        if (apiKey.isNotBlank()) {
+            _providerKeys.value = _providerKeys.value + (provider to apiKey)
+        }
         _modelState.value = ModelState.DOWNLOADING
         _downloadProgress.value = 0f
         _downloadedBytes.value = 0L
@@ -106,7 +130,6 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         downloadJob = viewModelScope.launch(Dispatchers.IO) {
             try {
-                // Delete any previously failed/partial download before retrying
                 if (modelFile.exists()) modelFile.delete()
 
                 val connection = openGoogleDriveConnection(MODEL_DOWNLOAD_URL)
@@ -115,17 +138,14 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     throw Exception("Server returned $responseCode")
                 }
 
-                // Guard: Google Drive returns HTML when the confirmation fails
                 val contentType = connection.contentType ?: ""
                 if (contentType.contains("text/html", ignoreCase = true)) {
-                    throw Exception("Google Drive returned a web page instead of the file. Make sure the file is shared as 'Anyone with the link'.")
+                    throw Exception("Google Drive returned a web page. Make sure the file is shared as 'Anyone with the link'.")
                 }
 
                 val total = connection.contentLengthLong
                 _totalBytes.value = total
-
                 var downloaded = 0L
-                _downloadedBytes.value = downloaded
 
                 connection.inputStream.use { input ->
                     FileOutputStream(modelFile, false).use { output ->
@@ -143,7 +163,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 _modelPath.value = modelFile.absolutePath
-                setup(apiKey, modelFile.absolutePath)
+                setup(provider, apiKey, modelFile.absolutePath)
 
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) return@launch
@@ -154,67 +174,67 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun resetToSetup() {
-        llmInference?.close()
-        llmInference = null
-        generativeModel = null
-        _geminiReady.value = false
-        _localReady.value = false
-        _modelState.value = ModelState.NOT_LOADED
-        _statusMessage.value = ""
-    }
-
     fun cancelDownload() {
         downloadJob?.cancel()
         _modelState.value = ModelState.NOT_LOADED
         _statusMessage.value = ""
     }
 
+    fun resetToSetup() {
+        llmInference?.close()
+        llmInference = null
+        generativeModel = null
+        _onlineReady.value = false
+        _localReady.value = false
+        _modelState.value = ModelState.NOT_LOADED
+        _statusMessage.value = ""
+    }
+
     // ── Google Drive download helper ──────────────────────────────────────────
-    //
-    // Google Drive serves a virus-scan warning HTML page for large files.
-    // We detect the warning cookie in the response and replay the request
-    // with that cookie to get the actual binary stream.
 
     private fun openGoogleDriveConnection(url: String): HttpURLConnection {
-        var connection = URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout = 15_000
-        connection.readTimeout = 30_000
-        connection.instanceFollowRedirects = true
-        connection.connect()
+        val initial = URL(url).openConnection() as HttpURLConnection
+        initial.connectTimeout = 15_000
+        initial.readTimeout = 30_000
+        initial.instanceFollowRedirects = true
+        initial.connect()
 
-        // Check if Google Drive set a download-warning cookie (large file confirmation)
-        val cookies = connection.headerFields["Set-Cookie"] ?: emptyList()
-        val warningCookie = cookies.firstOrNull { it.contains("download_warning") }
-
-        if (warningCookie != null) {
-            // Extract cookie value and replay the request with confirmation
-            val cookieValue = warningCookie.split(";").first()
-            val confirmToken = cookieValue.substringAfter("download_warning").substringAfter("=")
-            val confirmedUrl = "$url&confirm=$confirmToken"
-
-            connection.disconnect()
-            connection = URL(confirmedUrl).openConnection() as HttpURLConnection
-            connection.connectTimeout = 15_000
-            connection.readTimeout = 30_000
-            connection.instanceFollowRedirects = true
-            connection.setRequestProperty("Cookie", cookieValue)
-            connection.connect()
+        val contentType = initial.contentType ?: ""
+        if (!contentType.contains("text/html", ignoreCase = true)) {
+            return initial
         }
 
-        return connection
+        val html = initial.inputStream.bufferedReader().readText()
+        initial.disconnect()
+
+        val confirmedUrl =
+            Regex("""href="(https://drive\.usercontent\.google\.com/download[^"]+)"""")
+                .find(html)
+                ?.groupValues?.get(1)
+                ?.replace("&amp;", "&")
+                ?: throw Exception("Google Drive blocked the download. Open the share link in a browser, click 'Download anyway', copy that URL and use it as MODEL_DOWNLOAD_URL.")
+
+        val confirmed = URL(confirmedUrl).openConnection() as HttpURLConnection
+        confirmed.connectTimeout = 15_000
+        confirmed.readTimeout = 30_000
+        confirmed.instanceFollowRedirects = true
+        confirmed.connect()
+        return confirmed
     }
 
     // ── Setup ─────────────────────────────────────────────────────────────────
 
-    fun setup(apiKey: String, modelPath: String) {
-        _apiKey.value = apiKey
+    fun setup(provider: OnlineProvider, apiKey: String, modelPath: String) {
+        _selectedProvider.value = provider
+        if (apiKey.isNotBlank()) {
+            _providerKeys.value = _providerKeys.value + (provider to apiKey)
+        }
         _modelPath.value = modelPath
         _modelState.value = ModelState.LOADING
         _statusMessage.value = "Setting up…"
 
         viewModelScope.launch(Dispatchers.IO) {
-            _geminiReady.value = false
+            _onlineReady.value = false
             _localReady.value = false
             generativeModel = null
             llmInference?.close()
@@ -222,18 +242,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
             val errors = mutableListOf<String>()
 
-            // Online mode — Gemini API (no test call; errors surface on first message)
+            // Online mode
             if (apiKey.isNotBlank()) {
                 try {
-                    generativeModel = GenerativeModel(modelName = "gemini-3-flash-preview", apiKey = apiKey)
-                    _geminiReady.value = true
+                    if (provider == OnlineProvider.GEMINI) {
+                        generativeModel = GenerativeModel(
+                            modelName = "gemini-3-flash-preview",
+                            apiKey = apiKey
+                        )
+                    }
+                    _onlineReady.value = true
                 } catch (e: Exception) {
-                    Log.e("ChatViewModel", "Gemini init failed", e)
+                    Log.e("ChatViewModel", "${provider.displayName} init failed", e)
                     errors.add("Online: ${e.message}")
                 }
             }
 
-            // Offline mode — on-device model
+            // Offline mode
             if (modelPath.isNotBlank()) {
                 try {
                     val options = LlmInference.LlmInferenceOptions.builder()
@@ -248,9 +273,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
-            if (_geminiReady.value || _localReady.value) {
+            if (_onlineReady.value || _localReady.value) {
                 val modes = buildList {
-                    if (_geminiReady.value) add("Gemini (online)")
+                    if (_onlineReady.value) add("${provider.displayName} (online)")
                     if (_localReady.value) add("Local (offline)")
                 }.joinToString(" + ")
                 _modelState.value = ModelState.READY
@@ -268,10 +293,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (_isGenerating.value || _modelState.value != ModelState.READY) return
 
         val mode = when {
-            isOnline() && _geminiReady.value -> InferenceMode.GEMINI
-            _localReady.value -> InferenceMode.LOCAL
-            _geminiReady.value -> InferenceMode.GEMINI
-            else -> return
+            isOnline() && _onlineReady.value -> InferenceMode.ONLINE
+            _localReady.value               -> InferenceMode.LOCAL
+            _onlineReady.value              -> InferenceMode.ONLINE
+            else                            -> return
         }
         _currentMode.value = mode
 
@@ -282,18 +307,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 when (mode) {
-                    InferenceMode.GEMINI -> sendViaGemini(text)
+                    InferenceMode.ONLINE -> sendViaOnline(text)
                     InferenceMode.LOCAL  -> sendViaLocal(text)
                 }
                 finalizeStreaming()
             } catch (e: Exception) {
                 Log.e("ChatViewModel", "Generation failed (mode=$mode)", e)
-                if (mode == InferenceMode.GEMINI && _localReady.value) {
-                    // Gemini failed — disable it, notify UI, retry with local model
-                    _geminiReady.value = false
-                    _geminiError.value = e.message ?: "Gemini request failed"
+                if (mode == InferenceMode.ONLINE && _localReady.value) {
+                    _onlineReady.value = false
+                    _onlineError.value = "${_selectedProvider.value.displayName} failed: ${e.message ?: "Unknown error"}"
                     _currentMode.value = InferenceMode.LOCAL
-                    // Replace the streaming bubble with a local one and retry
                     _messages.update { list ->
                         list.dropLast(1) + Message(content = "", role = Role.ASSISTANT, isStreaming = true, isLocal = true)
                     }
@@ -312,17 +335,38 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun clearGeminiError() {
-        _geminiError.value = null
-    }
-
     fun clearChat() {
         _messages.value = emptyList()
     }
 
-    // ── Inference helpers ─────────────────────────────────────────────────────
+    fun clearOnlineError() {
+        _onlineError.value = null
+    }
 
-    private suspend fun sendViaGemini(text: String) {
+    // ── Online inference ──────────────────────────────────────────────────────
+
+    private suspend fun sendViaOnline(text: String) {
+        val provider = _selectedProvider.value
+        val apiKey = _providerKeys.value[provider]
+            ?: throw IllegalStateException("No API key for ${provider.displayName}")
+
+        when (provider) {
+            OnlineProvider.GEMINI -> sendViaGeminiSdk(text)
+            OnlineProvider.OPENAI -> streamOpenAiCompatible(
+                apiKey  = apiKey,
+                baseUrl = "https://api.openai.com/v1/chat/completions",
+                model   = "gpt-4o-mini"
+            )
+            OnlineProvider.CLAUDE -> streamAnthropic(apiKey)
+            OnlineProvider.GROK   -> streamOpenAiCompatible(
+                apiKey  = apiKey,
+                baseUrl = "https://api.x.ai/v1/chat/completions",
+                model   = "grok-3-mini"
+            )
+        }
+    }
+
+    private suspend fun sendViaGeminiSdk(text: String) {
         val model = generativeModel ?: throw IllegalStateException("Gemini not initialized")
         val history = _messages.value.dropLast(2).map { msg ->
             content(role = if (msg.role == Role.USER) "user" else "model") {
@@ -334,6 +378,98 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             chunk.text?.let { if (it.isNotEmpty()) appendToken(it) }
         }
     }
+
+    private suspend fun streamOpenAiCompatible(apiKey: String, baseUrl: String, model: String) {
+        val body = JSONObject().apply {
+            put("model", model)
+            put("messages", buildApiMessages())
+            put("stream", true)
+            put("max_tokens", 1024)
+        }
+
+        val connection = URL(baseUrl).openConnection() as HttpURLConnection
+        connection.requestMethod = "POST"
+        connection.setRequestProperty("Content-Type", "application/json")
+        connection.setRequestProperty("Authorization", "Bearer $apiKey")
+        connection.doOutput = true
+        connection.connectTimeout = 15_000
+        connection.readTimeout = 60_000
+        connection.outputStream.use { it.write(body.toString().toByteArray()) }
+
+        if (connection.responseCode != HttpURLConnection.HTTP_OK) {
+            val error = connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
+            throw Exception("${connection.responseCode}: $error")
+        }
+
+        connection.inputStream.bufferedReader().use { reader ->
+            while (currentCoroutineContext().isActive) {
+                val line = reader.readLine() ?: break
+                val data = line.removePrefix("data: ")
+                if (data.isBlank() || data == "[DONE]") continue
+                try {
+                    val content = JSONObject(data)
+                        .getJSONArray("choices")
+                        .getJSONObject(0)
+                        .getJSONObject("delta")
+                        .optString("content", "")
+                    if (content.isNotEmpty()) appendToken(content)
+                } catch (e: Exception) { /* skip malformed SSE lines */ }
+            }
+        }
+    }
+
+    private suspend fun streamAnthropic(apiKey: String) {
+        val body = JSONObject().apply {
+            put("model", "claude-haiku-4-5-20251001")
+            put("messages", buildApiMessages())
+            put("max_tokens", 1024)
+            put("stream", true)
+        }
+
+        val connection = URL("https://api.anthropic.com/v1/messages").openConnection() as HttpURLConnection
+        connection.requestMethod = "POST"
+        connection.setRequestProperty("Content-Type", "application/json")
+        connection.setRequestProperty("x-api-key", apiKey)
+        connection.setRequestProperty("anthropic-version", "2023-06-01")
+        connection.doOutput = true
+        connection.connectTimeout = 15_000
+        connection.readTimeout = 60_000
+        connection.outputStream.use { it.write(body.toString().toByteArray()) }
+
+        if (connection.responseCode != HttpURLConnection.HTTP_OK) {
+            val error = connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
+            throw Exception("Anthropic ${connection.responseCode}: $error")
+        }
+
+        connection.inputStream.bufferedReader().use { reader ->
+            while (currentCoroutineContext().isActive) {
+                val line = reader.readLine() ?: break
+                val data = line.removePrefix("data: ")
+                if (data.isBlank()) continue
+                try {
+                    val json = JSONObject(data)
+                    if (json.getString("type") == "content_block_delta") {
+                        val token = json.getJSONObject("delta").optString("text", "")
+                        if (token.isNotEmpty()) appendToken(token)
+                    }
+                } catch (e: Exception) { /* skip malformed SSE lines */ }
+            }
+        }
+    }
+
+    private fun buildApiMessages(): JSONArray {
+        val arr = JSONArray()
+        for (msg in _messages.value.dropLast(1)) {
+            if (msg.content.isBlank()) continue
+            arr.put(JSONObject().apply {
+                put("role", if (msg.role == Role.USER) "user" else "assistant")
+                put("content", msg.content)
+            })
+        }
+        return arr
+    }
+
+    // ── Local inference ───────────────────────────────────────────────────────
 
     private suspend fun sendViaLocal(text: String) {
         val llm = llmInference ?: throw IllegalStateException("Local model not loaded")

@@ -23,7 +23,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.ImeAction
@@ -42,58 +42,59 @@ import java.io.File
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatScreen(vm: ChatViewModel = viewModel()) {
-    val modelState by vm.modelState.collectAsState()
-    val messages by vm.messages.collectAsState()
-    val isGenerating by vm.isGenerating.collectAsState()
-    val apiKey by vm.apiKey.collectAsState()
-    val modelPath by vm.modelPath.collectAsState()
-    val statusMessage by vm.statusMessage.collectAsState()
-    val currentMode by vm.currentMode.collectAsState()
-    val geminiReady by vm.geminiReady.collectAsState()
-    val localReady by vm.localReady.collectAsState()
-    val downloadProgress by vm.downloadProgress.collectAsState()
-    val downloadedBytes by vm.downloadedBytes.collectAsState()
-    val totalBytes by vm.totalBytes.collectAsState()
-    val geminiError by vm.geminiError.collectAsState()
+    val modelState     by vm.modelState.collectAsState()
+    val messages       by vm.messages.collectAsState()
+    val isGenerating   by vm.isGenerating.collectAsState()
+    val modelPath      by vm.modelPath.collectAsState()
+    val statusMessage  by vm.statusMessage.collectAsState()
+    val currentMode    by vm.currentMode.collectAsState()
+    val onlineReady    by vm.onlineReady.collectAsState()
+    val localReady     by vm.localReady.collectAsState()
+    val selectedProvider by vm.selectedProvider.collectAsState()
+    val providerKeys   by vm.providerKeys.collectAsState()
+    val onlineError    by vm.onlineError.collectAsState()
+    val downloadProgress  by vm.downloadProgress.collectAsState()
+    val downloadedBytes   by vm.downloadedBytes.collectAsState()
+    val totalBytes        by vm.totalBytes.collectAsState()
 
     AnimatedContent(targetState = modelState, label = "screen") { state ->
         when (state) {
             ChatViewModel.ModelState.NOT_LOADED,
             ChatViewModel.ModelState.ERROR -> {
                 ModelSetupScreen(
-                    initialApiKey = apiKey,
-                    initialModelPath = modelPath,
-                    errorMessage = if (state == ChatViewModel.ModelState.ERROR) statusMessage else null,
-                    onSetup = { key, path -> vm.setup(key, path) },
-                    onDownload = { key -> vm.downloadModel(key) }
+                    selectedProvider = selectedProvider,
+                    providerKeys     = providerKeys,
+                    errorMessage     = if (state == ChatViewModel.ModelState.ERROR) statusMessage else null,
+                    onProviderSelected = { vm.selectProvider(it) },
+                    onSetup   = { provider, apiKey, path -> vm.setup(provider, apiKey, path) },
+                    onDownload = { provider, apiKey -> vm.downloadModel(provider, apiKey) }
                 )
             }
 
             ChatViewModel.ModelState.DOWNLOADING -> {
                 DownloadScreen(
-                    progress = downloadProgress,
+                    progress        = downloadProgress,
                     downloadedBytes = downloadedBytes,
-                    totalBytes = totalBytes,
-                    onCancel = { vm.cancelDownload() }
+                    totalBytes      = totalBytes,
+                    onCancel        = { vm.cancelDownload() }
                 )
             }
 
-            ChatViewModel.ModelState.LOADING -> {
-                LoadingScreen()
-            }
+            ChatViewModel.ModelState.LOADING -> LoadingScreen()
 
             ChatViewModel.ModelState.READY -> {
                 ChatInterface(
-                    messages = messages,
-                    isGenerating = isGenerating,
-                    currentMode = currentMode,
-                    geminiReady = geminiReady,
-                    localReady = localReady,
-                    geminiError = geminiError,
-                    onSend = { vm.sendMessage(it) },
-                    onClear = { vm.clearChat() },
-                    onBack = { vm.resetToSetup() },
-                    onDismissGeminiError = { vm.clearGeminiError() }
+                    messages         = messages,
+                    isGenerating     = isGenerating,
+                    currentMode      = currentMode,
+                    activeProvider   = selectedProvider,
+                    onlineReady      = onlineReady,
+                    localReady       = localReady,
+                    onlineError      = onlineError,
+                    onSend           = { vm.sendMessage(it) },
+                    onClear          = { vm.clearChat() },
+                    onBack           = { vm.resetToSetup() },
+                    onDismissOnlineError = { vm.clearOnlineError() }
                 )
             }
         }
@@ -111,9 +112,7 @@ fun DownloadScreen(
 ) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(32.dp),
+            modifier = Modifier.fillMaxWidth().padding(32.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text("Downloading Model", style = MaterialTheme.typography.headlineSmall)
@@ -123,88 +122,73 @@ fun DownloadScreen(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-
             Spacer(Modifier.height(32.dp))
 
             if (totalBytes > 0) {
                 LinearProgressIndicator(
                     progress = { progress },
                     modifier = Modifier.fillMaxWidth(),
-                    strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
+                    strokeCap = StrokeCap.Round
                 )
             } else {
-                // Unknown total — show indeterminate bar
                 LinearProgressIndicator(
                     modifier = Modifier.fillMaxWidth(),
-                    strokeCap = androidx.compose.ui.graphics.StrokeCap.Round
+                    strokeCap = StrokeCap.Round
                 )
             }
 
             Spacer(Modifier.height(12.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    formatBytes(downloadedBytes),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(formatBytes(downloadedBytes), style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (totalBytes > 0) {
-                    Text(
-                        "${(progress * 100).toInt()}%  ·  ${formatBytes(totalBytes)}",
+                    Text("${(progress * 100).toInt()}%  ·  ${formatBytes(totalBytes)}",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
 
             Spacer(Modifier.height(32.dp))
-
-            OutlinedButton(onClick = onCancel) {
-                Text("Cancel")
-            }
-
+            OutlinedButton(onClick = onCancel) { Text("Cancel") }
             Spacer(Modifier.height(12.dp))
-            Text(
-                "Download will resume if interrupted.",
+            Text("Download will resume if interrupted.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
+                textAlign = TextAlign.Center)
         }
     }
 }
 
 private fun formatBytes(bytes: Long): String = when {
-    bytes <= 0 -> "0 B"
-    bytes < 1_024 -> "$bytes B"
-    bytes < 1_048_576 -> "${bytes / 1_024} KB"
+    bytes <= 0          -> "0 B"
+    bytes < 1_024       -> "$bytes B"
+    bytes < 1_048_576   -> "${bytes / 1_024} KB"
     bytes < 1_073_741_824 -> "${"%.1f".format(bytes / 1_048_576f)} MB"
-    else -> "${"%.2f".format(bytes / 1_073_741_824f)} GB"
+    else                -> "${"%.2f".format(bytes / 1_073_741_824f)} GB"
 }
 
 // ─── Setup screen ─────────────────────────────────────────────────────────────
 
 @Composable
 fun ModelSetupScreen(
-    initialApiKey: String,
-    initialModelPath: String,
+    selectedProvider: ChatViewModel.OnlineProvider,
+    providerKeys: Map<ChatViewModel.OnlineProvider, String>,
     errorMessage: String?,
-    onSetup: (apiKey: String, modelPath: String) -> Unit,
-    onDownload: (apiKey: String) -> Unit
+    onProviderSelected: (ChatViewModel.OnlineProvider) -> Unit,
+    onSetup: (ChatViewModel.OnlineProvider, String, String) -> Unit,
+    onDownload: (ChatViewModel.OnlineProvider, String) -> Unit
 ) {
-    var apiKey by remember { mutableStateOf(initialApiKey) }
+    // Local mutable copy of keys so each provider remembers its key while user switches
+    var localKeys by remember { mutableStateOf(providerKeys) }
+    var localProvider by remember { mutableStateOf(selectedProvider) }
     var keyVisible by remember { mutableStateOf(false) }
+
+    val currentKey = localKeys[localProvider] ?: ""
 
     val context = LocalContext.current
     val modelFile = remember { File(context.filesDir, ChatViewModel.MODEL_FILE_NAME) }
     val modelExists = modelFile.exists()
-    val modelSizeText = if (modelExists) formatBytes(modelFile.length()) else null
-
-    // If model was pre-downloaded, use its path; otherwise empty (Gemini-only is valid too)
-    val effectiveModelPath = if (modelExists) modelFile.absolutePath else initialModelPath
+    val effectiveModelPath = if (modelExists) modelFile.absolutePath else ""
 
     Column(
         modifier = Modifier
@@ -227,21 +211,43 @@ fun ModelSetupScreen(
 
         Spacer(Modifier.height(24.dp))
 
-        // ── Online section ────────────────────────────────────────────────
+        // ── Online section ────────────────────────────────────────────────────
         ElevatedCard(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text("🌐  Online Mode", style = MaterialTheme.typography.titleSmall)
                 Text(
-                    "Uses Gemini API — requires internet",
+                    "Pick a provider and enter its API key",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(12.dp))
+
+                // Provider selector
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    ChatViewModel.OnlineProvider.entries.forEachIndexed { index, provider ->
+                        SegmentedButton(
+                            selected = localProvider == provider,
+                            onClick = {
+                                localProvider = provider
+                                onProviderSelected(provider)
+                                keyVisible = false
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(
+                                index, ChatViewModel.OnlineProvider.entries.size
+                            ),
+                            label = { Text(provider.displayName, maxLines = 1) }
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                // API key field — updates per provider
                 OutlinedTextField(
-                    value = apiKey,
-                    onValueChange = { apiKey = it },
-                    label = { Text("Gemini API Key") },
-                    placeholder = { Text("AIza…") },
+                    value = currentKey,
+                    onValueChange = { localKeys = localKeys + (localProvider to it) },
+                    label = { Text(localProvider.keyLabel) },
+                    placeholder = { Text(localProvider.keyHint) },
                     leadingIcon = { Icon(Icons.Default.Key, null) },
                     trailingIcon = {
                         IconButton(onClick = { keyVisible = !keyVisible }) {
@@ -256,9 +262,16 @@ fun ModelSetupScreen(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+
                 Spacer(Modifier.height(4.dp))
+                val hint = when (localProvider) {
+                    ChatViewModel.OnlineProvider.GEMINI -> "aistudio.google.com"
+                    ChatViewModel.OnlineProvider.OPENAI -> "platform.openai.com/api-keys"
+                    ChatViewModel.OnlineProvider.CLAUDE -> "console.anthropic.com/settings/keys"
+                    ChatViewModel.OnlineProvider.GROK   -> "console.x.ai"
+                }
                 Text(
-                    "Get a free key at aistudio.google.com",
+                    "Get a key at $hint",
                     style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -267,7 +280,7 @@ fun ModelSetupScreen(
 
         Spacer(Modifier.height(12.dp))
 
-        // ── Offline section ───────────────────────────────────────────────
+        // ── Offline section ───────────────────────────────────────────────────
         ElevatedCard(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text("📱  Offline Mode", style = MaterialTheme.typography.titleSmall)
@@ -279,48 +292,35 @@ fun ModelSetupScreen(
                 Spacer(Modifier.height(12.dp))
 
                 if (modelExists) {
-                    // Model is ready
                     Surface(
                         color = MaterialTheme.colorScheme.secondaryContainer,
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text("✓", color = MaterialTheme.colorScheme.secondary)
                             Spacer(Modifier.width(8.dp))
                             Column {
+                                Text("Model ready", style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer)
                                 Text(
-                                    "Model ready",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                    "${formatBytes(modelFile.length())} · ${ChatViewModel.MODEL_FILE_NAME}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
                                 )
-                                if (modelSizeText != null) {
-                                    Text(
-                                        "$modelSizeText · ${ChatViewModel.MODEL_FILE_NAME}",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
-                                    )
-                                }
                             }
                         }
                     }
                 } else {
-                    // Model not downloaded yet
                     Surface(
                         color = MaterialTheme.colorScheme.surfaceVariant,
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
+                            Text("Gemma 2B INT8 · ~1.3 GB", style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                "Gemma 2B INT8 · ~1.3 GB",
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                            Text(
-                                "Will be saved to private app storage — no storage permission needed.",
+                                "Saved to private app storage — no storage permission needed.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -328,7 +328,7 @@ fun ModelSetupScreen(
                     }
                     Spacer(Modifier.height(8.dp))
                     Button(
-                        onClick = { onDownload(apiKey.trim()) },
+                        onClick = { onDownload(localProvider, currentKey.trim()) },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Icon(Icons.Default.Download, contentDescription = null)
@@ -359,9 +359,9 @@ fun ModelSetupScreen(
         Spacer(Modifier.height(16.dp))
 
         Button(
-            onClick = { onSetup(apiKey.trim(), effectiveModelPath) },
+            onClick = { onSetup(localProvider, currentKey.trim(), effectiveModelPath) },
             modifier = Modifier.fillMaxWidth(),
-            enabled = apiKey.isNotBlank() || modelExists
+            enabled = currentKey.isNotBlank() || modelExists
         ) {
             Text("Setup")
         }
@@ -379,7 +379,7 @@ fun LoadingScreen() {
             Text("Setting up…", style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(8.dp))
             Text(
-                "Connecting to Gemini and/or loading local model.",
+                "Loading models…",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -395,13 +395,14 @@ fun ChatInterface(
     messages: List<Message>,
     isGenerating: Boolean,
     currentMode: ChatViewModel.InferenceMode?,
-    geminiReady: Boolean,
+    activeProvider: ChatViewModel.OnlineProvider,
+    onlineReady: Boolean,
     localReady: Boolean,
-    geminiError: String?,
+    onlineError: String?,
     onSend: (String) -> Unit,
     onClear: () -> Unit,
     onBack: () -> Unit,
-    onDismissGeminiError: () -> Unit
+    onDismissOnlineError: () -> Unit
 ) {
     var input by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -409,13 +410,13 @@ fun ChatInterface(
 
     BackHandler(onBack = onBack)
 
-    if (geminiError != null) {
+    if (onlineError != null) {
         AlertDialog(
-            onDismissRequest = onDismissGeminiError,
-            title = { Text("Gemini unavailable") },
-            text = { Text("Switched to offline mode.\n\n$geminiError") },
+            onDismissRequest = onDismissOnlineError,
+            title = { Text("${activeProvider.displayName} unavailable") },
+            text = { Text("Switched to offline mode.\n\n$onlineError") },
             confirmButton = {
-                TextButton(onClick = onDismissGeminiError) { Text("OK") }
+                TextButton(onClick = onDismissOnlineError) { Text("OK") }
             }
         )
     }
@@ -435,7 +436,7 @@ fun ChatInterface(
                         currentMode?.let { mode ->
                             Text(
                                 text = when (mode) {
-                                    ChatViewModel.InferenceMode.GEMINI -> "🌐 Online · Gemini"
+                                    ChatViewModel.InferenceMode.ONLINE -> "🌐 Online · ${activeProvider.displayName}"
                                     ChatViewModel.InferenceMode.LOCAL  -> "📱 Offline · Local"
                                 },
                                 style = MaterialTheme.typography.labelSmall,
@@ -506,27 +507,21 @@ fun ChatInterface(
     ) { padding ->
 
         if (messages.isEmpty()) {
-            Box(
-                modifier = Modifier.fillMaxSize().padding(padding),
-                contentAlignment = Alignment.Center
-            ) {
+            Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("✨", style = MaterialTheme.typography.displayLarge)
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        when {
-                            currentMode == ChatViewModel.InferenceMode.GEMINI -> "Gemini ready!"
-                            currentMode == ChatViewModel.InferenceMode.LOCAL  -> "Local model ready!"
-                            else -> "Ready!"
+                        when (currentMode) {
+                            ChatViewModel.InferenceMode.ONLINE -> "${activeProvider.displayName} ready!"
+                            ChatViewModel.InferenceMode.LOCAL  -> "Local model ready!"
+                            null -> "Ready!"
                         },
                         style = MaterialTheme.typography.titleLarge
                     )
                     Spacer(Modifier.height(6.dp))
-                    Text(
-                        "Ask me anything.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    Text("Ask me anything.", style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         } else {
@@ -537,7 +532,7 @@ fun ChatInterface(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 items(messages, key = { it.id }) { msg ->
-                    MessageBubble(msg)
+                    MessageBubble(msg, activeProvider)
                 }
             }
         }
@@ -547,7 +542,7 @@ fun ChatInterface(
 // ─── Message bubble ───────────────────────────────────────────────────────────
 
 @Composable
-fun MessageBubble(message: Message) {
+fun MessageBubble(message: Message, activeProvider: ChatViewModel.OnlineProvider) {
     val isUser = message.role == Role.USER
 
     Column(
@@ -556,7 +551,7 @@ fun MessageBubble(message: Message) {
     ) {
         if (!isUser) {
             Text(
-                if (message.isLocal) "📱 Local" else "🌐 Gemini",
+                if (message.isLocal) "📱 Local" else "🌐 ${activeProvider.displayName}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
@@ -566,14 +561,12 @@ fun MessageBubble(message: Message) {
         Surface(
             shape = RoundedCornerShape(
                 topStart = if (isUser) 16.dp else 4.dp,
-                topEnd = if (isUser) 4.dp else 16.dp,
+                topEnd   = if (isUser) 4.dp else 16.dp,
                 bottomStart = 16.dp,
-                bottomEnd = 16.dp
+                bottomEnd   = 16.dp
             ),
-            color = if (isUser)
-                MaterialTheme.colorScheme.primary
-            else
-                MaterialTheme.colorScheme.surfaceVariant,
+            color = if (isUser) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.surfaceVariant,
             modifier = Modifier.widthIn(max = 300.dp)
         ) {
             Box(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
@@ -594,10 +587,8 @@ fun MessageBubble(message: Message) {
                 } else {
                     Text(
                         text = message.content,
-                        color = if (isUser)
-                            MaterialTheme.colorScheme.onPrimary
-                        else
-                            MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (isUser) MaterialTheme.colorScheme.onPrimary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
